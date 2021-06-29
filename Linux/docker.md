@@ -50,5 +50,9 @@
 	docker ps
 进入容器
 	docker exec -it 容器id /bin/bash
+列出所有容器
+	docker container ls -a
+启动容器
+	docker container start ID
 ```
 
