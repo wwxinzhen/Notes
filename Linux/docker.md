@@ -43,7 +43,7 @@
 	或者 
 	docker pull ubuntu:latest
 查看本地镜像
-	docker image
+	docker images
 运行容器，并且可以通过exec命令进入ubuntu容器
 	docker run -itd --name ubuntu-test ubuntu
 查看容器信息
