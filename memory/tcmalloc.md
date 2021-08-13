@@ -2,11 +2,65 @@
 
 ​	`Thread-Caching Malloc`
 
+​	![img](https://s4.51cto.com/images/blog/202012/21/6116e67b102cdba0e57d12505999e28c.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=)
+
+​	Front-end：负责提供快速分配和重分配内存给应用，有Per-thread cache 和 Per-CPU cache两部分组成
+
+​	Middle-end：负责给Front-end提供缓存。当Front-end缓存内存不够时，从Middle-end申请内存
+
+​	Back-end：负责从操作系统获取内存，并给Middle-end提供缓存使用
+
+​	tcmalloc中每个线程都有独立的线程缓存ThreadCache，线程的内存分配请求会想ThreadCache申请，ThreadCache内存不够用时会向CentralCache申请，CentralCache内存不够用时会向PageHeap申请，PageHeap不够用时会向OS申请。
+
+##### 	（1）Front-end
+
+​		Front-end处理对特定大小内存的请求，有一个内存缓存用于分配或保存空闲内存。Front-end缓存一次只能由单个线程访问，不需要任何锁，因此大多数分配和释放都很快。
+
+​		Front-end有两种不同的实现模式：
+
+​			per-thread：tcmalloc最初支持对象的per-thread缓存，但会导致内存占用随着线程数增加而增加。现代应用程序可能有大量的线程，会导致每个线程占用累计起来很大，也可能有单个较小线程累积起来占用的内存会很大。
+
+​			per-CPU：tcmalloc近期开始支持per-cpu模式，在这个模式下，系统中的每个cpu逻辑都有自己的缓存，可以从中支配内存。在x86架构，逻辑cpu相当于一个超线程。
+
+##### 	（2）middle-end
+
+​		middle-end负责向front-end提供内存并将内存返回back-end。middle-end由transfer cache和central free list组成，每个类大小都有一个transfer cache和一个central free list。缓存由互斥锁保护，因此访问缓存会产生串行化成本。
+
+​		transfer cache
+
+​			当front-end请求内存或返回内存时，将访问transfer cache
+
+​			transfer cache保存一个指向空闲内存的指针数组，可以快速地将对象移动到数组中，或者代表front-end从数组中获取对象
+
+​			当一个线程正在分配另一个线程释放的内存时，transfer cache就可以得到内存名称。transfer cache允许内存在两个不同线程之间快速流动
+
+​			如果transfer cache无法满足内存请求，或者没有足够的空间容纳返回的对象，transfer cache将访问central free list
+
+​		central free list
+
+​			central free list使用spans管理内存
+
+##### 	（3）back-end
+
+​		back-end有三大职责：
+
+​			管理大量未使用的内存块
+
+​			负责在没有合适大小的内存来满足分配请求时从os获取内存
+
+​			负责将不需要的内存返回给操作系统
+
+​		tcmalloc有两种back-end
+
+​			legacy pageheap，管理tcmalloc中page大小的内存
+
+​			支持hugapge的pageheap，以hugepage大小的内存块来管理内存。管理hugepage内存块中内存，使分配器能够通过减少TLB未命中率来提高应用程序性能 
+
 #### 2、动机
 
 ​	`TCMalloc`减少了多线程程序中的锁竞争关系。对于小对象，已经基本上达到了零竞争。对于大对象，`TCMalloc`尝试使用恰当粒度和有效的自旋锁。
 
-​	在`ptmalloc2`中，内存不会从一个空间移动到另一个空间。。例如，在一个Google的应用中，第一阶段可能会为其URL标准化的数据结构分配大约`300MB`内存。当第一阶段结束后，第二阶段将从同样的地址空间开始。如果第二个阶段被安排到了与第一阶段不同的空间内，这个阶段不会复用任何第一阶段留下的的内存，并会给地址空间添加另外一个`300MB`。类似的内存爆炸问题也可以在其他的应用中看到。
+​	在`ptmalloc2`中，内存不会从一个空间移动到另一个空间。如，在一个Google的应用中，第一阶段可能会为其URL标准化的数据结构分配大约`300MB`内存。当第一阶段结束后，第二阶段将从同样的地址空间开始。如果第二个阶段被安排到了与第一阶段不同的空间内，这个阶段不会复用任何第一阶段留下的的内存，并会给地址空间添加另外一个`300MB`。类似的内存爆炸问题也可以在其他的应用中看到。
 
 ​	`TCMalloc`的另一个好处表现在小对象的空间效率，例如，分配N个8字节对象可能要使用大约`8N * 1.01`字节的空间，即多用百分之一的空间。而`ptmalloc2`中每个对象都使用了一个四字节的头，我认为并将最终的尺寸取整为8字节的倍数，最后使用了`16N`字节。
 
@@ -121,7 +175,7 @@ if (length > max_length)
 
 #### 8、跨度
 
-​	`tcmalloc`管理的堆由一系列页面组成。一系列的连续的页面由一个"跨度(span)"对象来表示。一个跨度可以是已被分配或者是空闲的。如果是空闲的，跨度则会是一个页面堆链表中的一个条目。如果已被分配，它会或者是一个已经被传递给应用程序的大对象，或者是一个已经被分割成一系列小对象的一个页面。如果是被分割成小对象，对象的尺寸类别会被记录在跨度中。
+​	`tcmalloc`管理的堆由一系列页面组成。一系列的连续的页面由一个"跨度(span)"对象来表示。一个跨度可以是已被分配或者是空闲的。如果是空闲的，跨度则会是一个页面堆链表中的一个条目。如果已被分配，它或者是一个已经被传递给应用程序的大对象，或者是一个已经被分割成一系列小对象的一个页面。如果是被分割成小对象，对象的尺寸类别会被记录在跨度中。
 
 ​	由页面号索引的中央数组可以用于找到某个页面所属的跨度对象。例如，下面的跨度a占据了2个页面，跨度b占据了1个页面，跨度c占据了5个页面，跨度d占据了3个页面。
 

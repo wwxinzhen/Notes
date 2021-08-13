@@ -27,14 +27,14 @@ munmap用于释放内存
 
 ​	因为`brk`,`sbrk`,`mmap`都属于系统调用，如果每次申请内存都调用他们，会产生系统调用，影响性能；其次，这样申请的内存容易产生碎片，因为堆是从低地址到高地址，如果高地址的内存没有被释放，低地址的内存就不能被回收。
 
-​	所以`malloc`采用的是内存池的管理方式（`ptmalloc`），`ptmalloc`采用边界标记法将内存划分为很多块，从而对内存的分配与回收进行管理。为了内存分配函数`malloc`的高效性，`ptmalloc`会预先向操作系统申请一块内存供用户使用，当我们申请和释放内存时，`ptmalloc`会将这些内存管理起来，并通过一些策略来判断是否将其回收给操作系统。这样做的最大好处是，用户申请和释放内存的时候更高效，避免产生过多的内存碎片。
+​	所以`malloc`采用的是内存池的管理方式（`ptmalloc`），`ptmalloc`采用**边界标记法**将内存划分为很多块，从而对内存的分配与回收进行管理。为了内存分配函数`malloc`的高效性，`ptmalloc`会预先向操作系统申请一块内存供用户使用，当我们申请和释放内存时，`ptmalloc`会将这些内存管理起来，并通过一些策略来判断是否将其回收给操作系统。这样做的最大好处是，用户申请和释放内存的时候更高效，避免产生过多的内存碎片。
 
 #### 5、chunk内存块的基本组织单元
 
 ```c++
 //ptmalloc源码中定义结构体malloc_chunk来描述这些块
 struct malloc_chunk
-
+{
   INTERNAL_SIZE_T      prev_size;    /* Size of previous chunk (if free).  */  
   INTERNAL_SIZE_T      size;         /* Size in bytes, including overhead. */  
   
@@ -59,13 +59,13 @@ struct malloc_chunk
 
 ​	chunk指针指向chunk开始的地址；`mem`指针指向用户内存块开始的地址。
 
-​	p=0时，表示前一个chunk为空闲，`prev_size`才有效
+​	P = 0时，表示前一个chunk为空闲，`prev_size`才有效
 
-​	p=1时，表示前一个chunk正在被使用，`prev_size`无效。p主要用于内存块的合并操作。`ptmalloc`分配的第一个块总是将p设为1，以防程序引用到不存在的区域。
+​	P = 1时，表示前一个chunk正在被使用，`prev_size`无效。p主要用于内存块的合并操作。`ptmalloc`分配的第一个块总是将p设为1，以防程序引用到不存在的区域。
 
-​	M=1为`mmap`映射区域分配；M=0为heap区域分配
+​	M = 1为`mmap`映射区域分配；M = 0为heap区域分配
 
-​	A=0为主分配区分配；A=1为非主分配区分配
+​	A = 0为主分配区分配；A = 1为非主分配区分配
 
 ##### 	b、空闲的chunk
 
@@ -77,49 +77,33 @@ struct malloc_chunk
 
 ##### 	c、chunk中的空间复用
 
-​	为了使chunk所占用的空间最小，`ptmalloc`使用了空间复用，一个chunk在不同状态下，某些区域表现出来不同的意义，以此达到复用。空闲时，一个chunk至少需要4个size_t大小的空间，用来存储`prev_size`，size，`fd`和`bk`，也就是`16bytes`。chunk的大小要align到`8bytes`。当一个chunk处于使用状态时，它的下一个chunk的`prev_size`域肯定是无效的。所以实际上，这个空间也可以被当前chunk使用。所以，一个使用中的chunk的大小的计算公式为：
+​	为了使chunk所占用的空间最小，`ptmalloc`使用了空间复用，一个chunk在不同状态下，某些区域表现出来不同的意义，以此达到复用。空闲时，一个chunk至少需要4个`size_t`大小的空间，用来存储`prev_size`，`size`，`fd`和`bk`，也就是`16bytes`。chunk的大小要对齐到`8bytes`。当一个chunk处于使用状态时，它的下一个chunk的`prev_size`域肯定是无效的。所以实际上，这个空间也可以被当前chunk使用。所以，一个使用中的chunk的大小的计算公式为：
 
-​					in_use_size = （用户请求大小 + 8 - 4）
+​					`in_use_size = （用户请求大小 + 8 - 4）`
 
-这里加`8bytes`是因为存储`prev_size`和`size`，但又因为向下一个chunk借了4个bytes，所以减去4。最后，因为空闲的chunk和使用中的chunk使用的是同一块空间，所以要取最大值作为实际的分配空间，即最终的分配空间为chunk_size = max(in_use_size, 16)。
+这里加`8bytes`是因为存储`prev_size`和`size`，但又因为向下一个chunk借了`4bytes`，所以减去4。最后，因为空闲的chunk和使用中的chunk使用的是同一块空间，所以要取最大值作为实际的分配空间，即最终的分配空间为`chunk_size = max(in_use_size, 16)`。
 
 #### 7、空闲链表bins
 
 ​	当用户free掉内存，`ptmalloc`并不会马上交还给操作系统，而是被`ptmalloc`本身的空闲链表bins管理起来，这样当下次进程需要`malloc`一块内存时，`ptmalloc`就会从空闲的bins上寻找一块合适的内存块分配给用户使用。这样可以避免频繁的系统调用，降低内存分配的开销。
 
-​	`malloc`将相似大小的chunk用双向链表连接起来，这样一个链表被称为一个bin，`ptmalloc`一共维护了128个bin，每个bins都维护了大小相近的双向链表的chunk。基于chunk的大小，有下列几种可用bins：
+​	`malloc`将相似大小的chunk用双向链表连接起来，这样一个链表被称为一个bin，`ptmalloc`一共维护了128个bin，每个bin都维护了大小相近的双向链表的chunk。基于chunk的大小，有下列几种可用bins：
 
-```c++
-fast bins
-unsorted bins
-small bins
-largge bins
-保存这些bin的数据结构为：
-    fastbinsY：这个数组用以保存fast bins
-   	bins：这个数组用以保存unsorted bin，small 以及 large bins，共计可容纳126个
-```
+<img src="D:\wuxinzhen1\Desktop\bins.png" alt="bins" style="zoom:50%;" />
 
-##### 	a、fast bins
 
-​	程序在运行时会经常需要申请和释放一些较小的内存空间。当分配器合并了相邻的几个小的chunk之后，也许马上就会有另一个小块内存的请求，这样分配器又需要从大的空闲内存中切分出一块，比较低效。故，引入fast bins
 
-<img src="https://img-blog.csdn.net/20180415152501972?watermark/2/text/aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3pfcnlhbg==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70" alt="img" style="zoom:50%;" />
+​	在32位平台下，bin[0]和bin[127]不存在。bin[1]为unsorted bins，bin[2]~bin[126]为sorted bins。
 
-​	fast bins是bins的高速缓冲区，大约有10个定长队列。每个fast bin都记录着一条free chunk的单链表（`binlist`，采用单链表是因为fast bin中链表的chunk不会被摘除的特点），增删chunk都发生在链表的前端。
+##### 	a、unsorted bins
 
-​	当用户释放一块不大于max_fast（默认值为`64B`）的chunk时，会默认放到fast bins上。当需要给用户分配的chunk小于等于max_fast时，`malloc`首先会到fast bins上寻找是否有合适的chunk。一定大小内的chunk无论是分配还是释放，都会在fast bin中过一遍。
-
-​	分配时，`binlist`中被检索的第一个chunk将被摘除并返回给用户，free掉的chunk将被添加在索引到的`binlist`前端。
-
-##### 	b、unsorted bins
-
-​	unsorted bin的队列使用bins数组的第一个，是bins的一个缓冲区，加快分配的速度。当用户释放的内存大于max_fast或者fast bins合并后的chunk都会首先进入unsorted bin上，chunk大小无限制，任何大小chunk都可以添加进入这里。这种途径给予`glibc malloc`第二次机会以重新使用最近free掉的chunk，这样寻找合适的bin的时间开销就抹掉了，因此分配和释放更快。
+​	unsorted bin的队列位于bins数组的第2个，下标为1，是bins的一个缓冲区，加快分配的速度。当用户释放的内存大于max_fast或者fast bins合并后的chunk都会首先进入unsorted bin上，chunk大小无限制，任何大小chunk都可以添加进入这里。这种途径给予`glibc malloc`第二次机会以重新使用最近free掉的chunk，这样寻找合适的bin的时间开销就抹掉了，因此分配和释放更快。
 
 ​	用户`malloc`时，如果fast bins中没有找到合适的chunk，则`malloc`会先在unsorted bin中查找合适的空闲chunk。如果没有有合适的bin，`ptmalloc`会将unsorted bin上的chunk放入bins上，然后bins上查找合适的空闲chunk。
 
-##### 	c、small bins
+##### 	b、small bins
 
-​	小于`512bytes`的chunk被称为small chunk，而保存small chunks的bin被称为small bin。数组从2开始编号，前64个bin为small bins，small bins每个bin之间相差`8bytes`，同一个small bin的chunk具有相同大小。
+​	小于`512bytes`的chunk被称为small chunk，而保存small chunks的bin被称为small bin。下标从2开始，到63结束，一共62个。small bins每个bin之间相差`8bytes`，同一个small bin的chunk具有相同大小。
 
 ​	每个small bin都包括一个空闲区块的双向循环链表，free掉的chunk添加在链表的前端，而所需chunk则从链表后端摘除。
 
@@ -127,13 +111,25 @@ largge bins
 
 ​	分配时，当small bin非空后，相应的bin会摘除`binlist`中最后一个chunk并返回用户。在free一个chunk的时候，检查其前或其后的chunk是否空闲，若是则合并，也即把他们从所属的链表中摘除合并成一个新的chunk，新的chunk会添加在unsorted bin链表的前端。
 
-##### 	d、large bins
+##### 	c、large bins
 
-​	大于`512bytes`的chunk被称为large chunk，而保存为large chunks的bin被称为large bin，位于small bins后面。large bins中的每个bin分别包含了一个给定范围内的chunk，其中的chunk按大小递减排序，大小相同则按照最近使用时间排列。
+​	大于`512bytes`的chunk被称为large chunk，而保存为large chunks的bin被称为large bin，位于small bins后面。下标从64开始，到126结束，一共63（32+16+8+4+2+1）个。large bins中的每个bin分别包含了一个给定范围内的chunk，其中的chunk按大小递减排序，大小相同则按照最近使用时间排列。
 
 ​	两个毗邻的空闲chunk会被合并成一个空闲chunk。
 
 ​	分配时，遵循“smallest-first，best-fit"，从顶部遍历到底部以找到一个大小最接近用户需求的chunk。一旦找到，相应chunk就会分成两块user chunk（用户请求大小）返回给用户。remainder chunk剩余部分添加到unsorted bin。free和small bin类似。
+
+##### 	d、fast bins
+
+​	程序在运行时会经常需要申请和释放一些较小的内存空间。当分配器合并了相邻的几个小的chunk之后，也许马上就会有另一个小块内存的请求，这样分配器又需要从大的空闲内存中切分出一块，比较低效。故，引入fast bins
+
+<img src="https://img-blog.csdn.net/20180415152501972?watermark/2/text/aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3pfcnlhbg==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70" alt="img" style="zoom:50%;" />
+
+​	fast bins是bins的高速缓冲区，大约有10个定长队列(bin)。每个fast bin都记录着一条free chunk的单链表（`binlist`，采用单链表是因为fast bin中链表的chunk不会被摘除的特点），增删chunk都发生在链表的前端。
+
+​	当用户释放一块不大于max_fast（默认值为`64B`）的chunk时，会默认放到fast bins上。当需要给用户分配的chunk小于等于max_fast时，`malloc`首先会到fast bins上寻找是否有合适的chunk。一定大小内的chunk无论是分配还是释放，都会在fast bin中过一遍。
+
+​	分配时，`binlist`中被检索的第一个chunk将被摘除并返回给用户，free掉的chunk将被添加在索引到的`binlist`前端。
 
 #### 8、三种特殊的chunk
 
@@ -157,11 +153,11 @@ largge bins
 
 ​	在堆区中，`start_brk`指向heap的开始，而`brk`指向heap的顶部。可以使用`brk()&sbrk()`来增加分配给用户的heap空间。在使用`malloc`前，`brk`的值等于start_`brk`，也就是说heap大小=0。
 
-​	`ptmalloc`在开始时，若请求的空间小于`mmap`分配阈值（默认为`128KB`）时，主分配区会调用`sbrk`()增加一块大小为`（128KB+chunk_size）`的空间作为heap。非主分配区会调用`mmap`映射一块大小为HEAP_MAX_SIZE(32位系统默认为1MB，64位系统默认为64MB)的空间作为sub-heap。
+​	`ptmalloc`在开始时，若请求的空间小于`mmap`分配阈值（默认为`128KB`）时，主分配区会调用`sbrk`()增加一块大小为`（128KB+chunk_size）`的空间作为heap。非主分配区会调用`mmap`映射一块大小为HEAP_MAX_SIZE(32位系统默认为`1MB`，64位系统默认为`64MB`)的空间作为sub-heap。
 
 ​	当用户请求内存分配时，首先会在这个区域找一块合适的chunk给用户，当用户释放了heap中的chunk时，`ptmalloc`又会使用`fastbin`和bins来组织空闲chunk。
 
-​	若需要分配的chunk大小小于`mmap`分配阈值，而heap空间又不够，则此时主分配区会通过`sbrk()`调用来增加heap大小，非主分配区会调用`mmap`映射一块新的sub-heap，也就是增加top-chunk的大小，每次heap增加的值都会对齐到4KB。当用户的请求超过`mmap`分配阈值，并且主分配区使用`sbrk()`分配失败的时候，或是非主分配区在top chunk中不能分配到需要的内存时，`ptmalloc`会尝试使用`mmap()`直接映射一块内存到进程内存空间。使用`mmap()`直接映射的chunk在释放时直接接触映射，而不再属于进程的内存空间。任何对该内存的访问都会产生段错误。而在heap中或是sub-heap中分配的空间则可能会留在进程内存空间内，开可以再次引用。
+​	若需要分配的chunk大小小于`mmap`分配阈值，而heap空间又不够，则此时主分配区会通过`sbrk()`调用来增加heap大小，非主分配区会调用`mmap`映射一块新的sub-heap，也就是增加top-chunk的大小，每次heap增加的值都会对齐到`4KB`。当用户的请求超过`mmap`分配阈值，并且主分配区使用`sbrk()`分配失败的时候，或是非主分配区在top chunk中不能分配到需要的内存时，`ptmalloc`会尝试使用`mmap()`直接映射一块内存到进程内存空间。使用`mmap()`直接映射的chunk在释放时直接接触映射，而不再属于进程的内存空间。任何对该内存的访问都会产生段错误。而在heap中或是sub-heap中分配的空间则可能会留在进程内存空间内，开可以再次引用。
 
 #### 10、主分配区和非主分配区
 
@@ -183,25 +179,25 @@ largge bins
 
 ​	需要注意：
 
-​		（1）主分配区通过brk()进行分配，非主分配区通过mmap()进行分配
+​		（1）主分配区通过`brk()`进行分配，非主分配区通过`mmap()`进行分配
 
-​		（2）从分配区虽然是mmap()分配，但是和大于128K直接使用mmap分配没有任何关系。大于128K的内存使用mmap分配，使用完之后直接用ummap还给系统
+​		（2）从分配区虽然是`mmap()`分配，但是和大于`128K`直接使用`mmap()`分配没有任何关系。大于`128K`的内存使用`mmap()`分配，使用完之后直接用`ummap()`还给系统
 
-​		（3）每个线程在malloc会先获取一个area，使用area内存池分配自己的内存，这里存在竞争关系。
+​		（3）每个线程在`malloc`会先获取一个area，使用area内存池分配自己的内存，这里存在竞争关系。
 
-​		（4）为了避免竞争，我们可以使用线程局部存储，thread cache(tcmalloc中的tc正是此意)，改进如下：
+​		（4）为了避免竞争，我们可以使用线程局部存储，thread cache(`tcmalloc`中的`tc`正是此意)，改进如下：
 
-​				a、如果需要在一个线程内部的各个函数调用都能访问、但其他线程不能访问的变量（被称为static memory local to a thread 线程局部静态变量），就需要新的机制来实现，这就是TLS。
+​				a、如果需要在一个线程内部的各个函数调用都能访问、但其他线程不能访问的变量（被称为static memory local to a thread 线程局部静态变量），就需要新的机制来实现，这就是`TLS`。
 
 ​				b、thread cache本质上是在static区为每一个thread开辟一个独有的空间，因为独有，不再有竞争
 
-​				c、每次malloc时，先去线程局部存储空间中找area，用thread cache中的area分配存在thread area中的chunk。当不够时，才去找栈区的area
+​				c、每次`malloc`时，先去线程局部存储空间中找area，用thread cache中的area分配存在thread area中的chunk。当不够时，才去找栈区的area
 
 ​				d、C++11提供thread_local方便于线程局部存储
 
-​		tcmalloc 和 jemalloc都不再使用主分配区，直接使用非主分配区
+​		`tcmalloc` 和 `jemalloc`都不再使用主分配区，直接使用非主分配区
 
-##### 11、内存分配malloc流程
+#### 11、内存分配malloc流程
 
 ```c++
 1、获取分配区的锁，防止多线程冲突（一个进程有一个malloc管理器，而一个进程中的多个线程共享这一个管理器，有竞争，加锁）
